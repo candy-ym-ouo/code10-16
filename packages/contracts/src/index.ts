@@ -203,6 +203,206 @@ export const createExportSchema = z.object({
 
 export const idSchema = z.string().uuid();
 
+// ---------------------------------------------------------------------------
+// 教师复盘交接：带时间戳的只读分享、批注收集、撤销、合并与冲突版本
+// ---------------------------------------------------------------------------
+
+export const HANDOVER_REVIEW_FIELDS = ["goodPoints", "mainIssues", "nextFocus"] as const;
+export type HandoverReviewField = (typeof HANDOVER_REVIEW_FIELDS)[number];
+
+export const HANDOVER_ANNOTATION_KINDS = ["COMMENT", "SUGGESTION"] as const;
+export type HandoverAnnotationKind = (typeof HANDOVER_ANNOTATION_KINDS)[number];
+
+export const HANDOVER_ANNOTATION_STATUSES = ["PENDING", "REJECTED", "MERGED", "CONFLICTED", "RESOLVED"] as const;
+export const HANDOVER_CONFLICT_REASONS = ["OVERLAP", "ANCHOR_DRIFT"] as const;
+export type HandoverConflictReason = (typeof HANDOVER_CONFLICT_REASONS)[number];
+
+export const handoverCreateSchema = z.object({
+  sessionId: z.string().uuid(),
+  title: requiredText("交接标题", 160),
+});
+
+export const handoverShareCreateSchema = z.object({
+  label: optionalText(80, "分享备注"),
+  expiresInSeconds: z.coerce.number().int().min(60).max(2_592_000).optional().nullable(),
+});
+
+export const handoverShareRevokeSchema = z.object({
+  reason: optionalText(200, "撤销原因"),
+});
+
+export const handoverAnnotationCreateSchema = z
+  .object({
+    authorName: requiredText("批注人", 80),
+    kind: z.enum(HANDOVER_ANNOTATION_KINDS),
+    fieldPath: z.enum(HANDOVER_REVIEW_FIELDS),
+    start: z.coerce.number().int().nonnegative(),
+    end: z.coerce.number().int().positive(),
+    quote: requiredText("引用原文", 2000),
+    body: optionalText(2000, "批注说明"),
+    replacement: z.string().max(2000, "替换文本不能超过 2000 个字符").optional().nullable(),
+  })
+  .refine((value) => value.end > value.start, {
+    path: ["end"],
+    message: "结束位置必须大于开始位置",
+  })
+  .refine((value) => value.kind !== "SUGGESTION" || value.replacement != null, {
+    path: ["replacement"],
+    message: "修改建议必须提供替换文本",
+  });
+
+export const handoverMergeSchema = z.object({
+  annotationIds: z.array(z.string().uuid()).min(1).max(50),
+});
+
+export const handoverConflictResolveSchema = z.discriminatedUnion("strategy", [
+  z.object({ strategy: z.literal("pick"), annotationId: z.string().uuid() }),
+  z.object({ strategy: z.literal("custom"), text: z.string().max(2000, "替换文本不能超过 2000 个字符") }),
+]);
+
+export interface HandoverSuggestionInput {
+  id: string;
+  authorName: string;
+  fieldPath: HandoverReviewField;
+  start: number;
+  end: number;
+  quote: string;
+  replacement: string;
+}
+
+export interface HandoverConflictVersion {
+  annotationId: string;
+  authorName: string;
+  replacement: string;
+  /** 仅应用该条建议后整个字段的文本，用于保留冲突版本 */
+  resultingText: string;
+}
+
+export interface HandoverConflictPlan {
+  reason: HandoverConflictReason;
+  fieldPath: HandoverReviewField;
+  /** 冲突发生时主文档中的原文片段 */
+  baseText: string;
+  start: number;
+  end: number;
+  versions: HandoverConflictVersion[];
+}
+
+export interface HandoverMergePlan {
+  newFields: Record<HandoverReviewField, string>;
+  applied: Array<{ annotationId: string; fieldPath: HandoverReviewField }>;
+  conflicts: HandoverConflictPlan[];
+}
+
+/** 在文本中查找唯一定位；不存在或出现多次时返回 null */
+export function locateUnique(text: string, needle: string): number | null {
+  if (!needle) return null;
+  const first = text.indexOf(needle);
+  if (first === -1) return null;
+  return text.indexOf(needle, first + 1) === -1 ? first : null;
+}
+
+/** 按起点倒序应用替换，避免偏移量互相污染；调用方需保证区间互不重叠 */
+export function applyTextSuggestions(
+  text: string,
+  edits: Array<{ start: number; end: number; replacement: string }>,
+): string {
+  const ordered = [...edits].sort((a, b) => b.start - a.start || b.end - a.end);
+  let result = text;
+  for (const edit of ordered) {
+    result = result.slice(0, edit.start) + edit.replacement + result.slice(edit.end);
+  }
+  return result;
+}
+
+/**
+ * 规划批注合并：锚点精确命中的建议直接应用；
+ * 区间重叠或锚点漂移的建议不改动主文档，完整保留各冲突版本等待人工裁决。
+ */
+export function planHandoverMerge(
+  fields: Record<HandoverReviewField, string>,
+  suggestions: HandoverSuggestionInput[],
+): HandoverMergePlan {
+  const newFields = { ...fields };
+  const applied: HandoverMergePlan["applied"] = [];
+  const conflicts: HandoverConflictPlan[] = [];
+
+  for (const fieldPath of HANDOVER_REVIEW_FIELDS) {
+    const text = fields[fieldPath];
+    const located: Array<{ suggestion: HandoverSuggestionInput; start: number; end: number }> = [];
+
+    for (const suggestion of suggestions.filter((item) => item.fieldPath === fieldPath)) {
+      if (text.slice(suggestion.start, suggestion.end) === suggestion.quote) {
+        located.push({ suggestion, start: suggestion.start, end: suggestion.end });
+        continue;
+      }
+      // 锚点漂移：原文不在批注时的位置，保留“当前文本 / 建议文本”两个版本
+      const relocated = locateUnique(text, suggestion.quote);
+      conflicts.push({
+        reason: "ANCHOR_DRIFT",
+        fieldPath,
+        baseText: suggestion.quote,
+        start: relocated ?? suggestion.start,
+        end: relocated == null ? suggestion.end : relocated + suggestion.quote.length,
+        versions: [
+          {
+            annotationId: suggestion.id,
+            authorName: suggestion.authorName,
+            replacement: suggestion.replacement,
+            resultingText:
+              relocated == null
+                ? text
+                : applyTextSuggestions(text, [
+                    { start: relocated, end: relocated + suggestion.quote.length, replacement: suggestion.replacement },
+                  ]),
+          },
+        ],
+      });
+    }
+
+    // 按起点排序后把链式重叠的区间归并到同一冲突组
+    located.sort((a, b) => a.start - b.start || a.end - b.end);
+    const groups: Array<typeof located> = [];
+    for (const item of located) {
+      const group = groups[groups.length - 1];
+      const groupEnd = group ? Math.max(...group.map((member) => member.end)) : -1;
+      if (group && item.start < groupEnd) group.push(item);
+      else groups.push([item]);
+    }
+
+    const cleanEdits: Array<{ start: number; end: number; replacement: string }> = [];
+    for (const group of groups) {
+      if (group.length === 1) {
+        const [only] = group;
+        cleanEdits.push({ start: only!.start, end: only!.end, replacement: only!.suggestion.replacement });
+        applied.push({ annotationId: only!.suggestion.id, fieldPath });
+        continue;
+      }
+      const start = Math.min(...group.map((member) => member.start));
+      const end = Math.max(...group.map((member) => member.end));
+      conflicts.push({
+        reason: "OVERLAP",
+        fieldPath,
+        baseText: text.slice(start, end),
+        start,
+        end,
+        versions: group.map((member) => ({
+          annotationId: member.suggestion.id,
+          authorName: member.suggestion.authorName,
+          replacement: member.suggestion.replacement,
+          resultingText: applyTextSuggestions(text, [
+            { start: member.start, end: member.end, replacement: member.suggestion.replacement },
+          ]),
+        })),
+      });
+    }
+
+    newFields[fieldPath] = applyTextSuggestions(text, cleanEdits);
+  }
+
+  return { newFields, applied, conflicts };
+}
+
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 export type MediaStatus = (typeof MEDIA_STATUSES)[number];
 export type AnnotationType = (typeof ANNOTATION_TYPES)[number];

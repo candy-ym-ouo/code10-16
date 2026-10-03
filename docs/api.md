@@ -114,6 +114,56 @@ Refresh Cookie 路径为 `/api/v1/auth`，生产环境在 HTTPS 下自动使用 
 
 完成复盘请求会原子写入复盘、目标、进度并更新练习状态。任一步失败时全部回滚，返回 `REVIEW_INCOMPLETE` 且 `details` 为缺失项数组。
 
+## 复盘交接
+
+教师把一次练习的复盘冻结成带时间戳的快照（交接单），生成只读分享链接收集批注，再把批注合并回复盘。快照在创建交接单时固定，之后修改复盘不影响已发出的分享。
+
+管理接口（需登录，仅交接单所有者）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/handovers` | 用 `sessionId` + `title` 创建交接单，要求练习已有复盘内容 |
+| GET | `/handovers` | 交接单列表，含各分享状态、待处理批注数和未决冲突数 |
+| GET | `/handovers/:id` | 交接单详情：快照、分享、批注、冲突 |
+| POST | `/handovers/:id/shares` | 创建分享，可选 `label` 和 `expiresInSeconds`（60～2592000） |
+| POST | `/handovers/:id/shares/:shareId/revoke` | 撤销分享，可选 `reason`；撤销立即生效且幂等 |
+| POST | `/handovers/:id/annotations/:annotationId/reject` | 驳回待处理批注 |
+| POST | `/handovers/:id/merge` | 合并批注：`{ "annotationIds": [...] }` |
+| POST | `/handovers/:id/conflicts/:conflictId/resolve` | 裁决冲突：`{ "strategy": "pick", "annotationId" }` 或 `{ "strategy": "custom", "text" }` |
+| GET | `/handovers/:id/audit` | 该交接单的审计流水（最近 200 条） |
+
+公开接口（无需登录，分享令牌即授权）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/shared/handovers/:token` | 只读快照：练习信息、复盘字段、标记列表和快照时间 `capturedAt` |
+| GET | `/shared/handovers/:token/annotations` | 已有批注列表 |
+| POST | `/shared/handovers/:token/annotations` | 提交批注 |
+
+行为约定：
+
+- 分享令牌为 32 字节随机值，只在创建响应中出现一次，服务端只存 SHA-256 哈希。
+- 每个公开请求都实时校验撤销（`revokedAt`）与过期（`expiresAt`）状态：撤销后下一个请求即返回 `403 SHARE_REVOKED`，过期返回 `410 SHARE_EXPIRED`，拒绝事件写入审计。
+- 批注锚定到复盘字段（`goodPoints` / `mainIssues` / `nextFocus`）的字符区间，`quote` 必须与快照中该区间的原文一致，否则返回 `400 ANCHOR_MISMATCH`。`kind` 为 `COMMENT`（纯批注）或 `SUGGESTION`（必须带 `replacement`，空串表示建议删除）。
+- 合并只处理 `PENDING` 状态的批注。锚点精确命中的建议直接应用到复盘字段；区间重叠（`OVERLAP`）或锚点漂移（`ANCHOR_DRIFT`）的建议不改动主文档，生成冲突记录并完整保留各候选版本（`baseText` + 每个版本的 `replacement` 与 `resultingText`），等待人工裁决。
+- 裁决时 `pick` 选择某个候选版本、`custom` 使用自定义文本；冲突原文在当前复盘中无法唯一定位时返回 `409 ANCHOR_DRIFT`。合并与裁决都在单事务内更新复盘并递增练习 `version`，冲突版本和裁决结果永久留痕。
+- 创建交接单、创建/撤销分享、每次快照访问（含被拒绝的访问）、批注提交、合并与裁决都写入 `AuditLog`（含 `traceId`、IP 哈希和操作元数据），可通过 `/handovers/:id/audit` 追溯。
+
+提交批注示例：
+
+```json
+{
+  "authorName": "王老师",
+  "kind": "SUGGESTION",
+  "fieldPath": "mainIssues",
+  "start": 0,
+  "end": 5,
+  "quote": "第 17 ",
+  "body": "小节号记错了",
+  "replacement": "第 18 "
+}
+```
+
 ## 统计与导出
 
 | 方法 | 路径 | 说明 |
