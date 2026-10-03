@@ -38,6 +38,9 @@ export const METRIC_TYPES = [
 ] as const;
 export const EVIDENCE_REQUIREMENTS = ["NONE", "AUDIO", "SELF_REVIEW", "AUDIO_AND_SELF_REVIEW"] as const;
 export const GOAL_STATUSES = ["OPEN", "IN_PROGRESS", "ACHIEVED", "MISSED", "CANCELLED"] as const;
+export const SHARE_ANNOTATION_SECTIONS = ["GENERAL", "GOOD_POINTS", "MAIN_ISSUES", "NEXT_FOCUS", "GOALS"] as const;
+export const SHARE_ANNOTATION_STATUSES = ["PENDING", "MERGED", "CONFLICT"] as const;
+export const SHARE_TOKEN_TTL_HOURS_MAX = 720;
 
 const requiredText = (label: string, max: number) =>
   z.string().trim().min(1, `${label}不能为空`).max(max, `${label}不能超过 ${max} 个字符`);
@@ -201,6 +204,24 @@ export const createExportSchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+export const shareCreateSchema = z.object({
+  note: optionalText(200, "交接备注"),
+  expiresInHours: z.coerce.number().int().min(1).max(SHARE_TOKEN_TTL_HOURS_MAX).optional().nullable(),
+});
+export const shareAnnotationCreateSchema = z.object({
+  authorName: requiredText("署名", 80),
+  section: z.enum(SHARE_ANNOTATION_SECTIONS),
+  content: requiredText("批注内容", 2000),
+  clientRequestId: z.string().trim().min(8).max(80).optional().nullable(),
+});
+export const shareAnnotationMergeSchema = z.object({
+  annotationIds: z.array(z.string().uuid()).min(1).max(200),
+});
+export const shareAnnotationListQuerySchema = z.object({
+  status: z.enum(SHARE_ANNOTATION_STATUSES).optional(),
+  section: z.enum(SHARE_ANNOTATION_SECTIONS).optional(),
+});
+
 export const idSchema = z.string().uuid();
 
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
@@ -210,6 +231,8 @@ export type GoalCategory = (typeof GOAL_CATEGORIES)[number];
 export type MetricType = (typeof METRIC_TYPES)[number];
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 export type EvidenceRequirement = (typeof EVIDENCE_REQUIREMENTS)[number];
+export type ShareAnnotationSection = (typeof SHARE_ANNOTATION_SECTIONS)[number];
+export type ShareAnnotationStatus = (typeof SHARE_ANNOTATION_STATUSES)[number];
 
 export interface ApiErrorBody {
   error: {
@@ -255,6 +278,67 @@ export function validateAnnotationRange(
 
 export function isGoalProgressValid(actualValue: number, targetValue: number): boolean {
   return Number.isFinite(actualValue) && Number.isFinite(targetValue) && actualValue >= targetValue;
+}
+
+export interface ShareValidity {
+  revokedAt: Date | string | null;
+  expiresAt: Date | string | null;
+}
+
+/**
+ * 分享是否当前可用。每次请求都必须基于最新记录调用：
+ * 撤销（revokedAt 非空）或过期（expiresAt 已过）立即生效，不做任何缓存。
+ */
+export function isShareActive(share: ShareValidity, now: Date = new Date()): boolean {
+  if (share.revokedAt != null) return false;
+  if (share.expiresAt != null && new Date(share.expiresAt).getTime() <= now.getTime()) return false;
+  return true;
+}
+
+export interface MergeableAnnotation {
+  id: string;
+  section: ShareAnnotationSection;
+  content: string;
+}
+
+export interface MergeConflictGroup {
+  section: ShareAnnotationSection;
+  annotationIds: string[];
+  contents: string[];
+}
+
+export interface AnnotationMergePlan {
+  mergedIds: string[];
+  conflicts: MergeConflictGroup[];
+}
+
+function normalizeAnnotationContent(content: string): string {
+  return content.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * 批注合并规划：按栏目分组，内容一致（忽略首尾空白与连续空白）的批注合并；
+ * 同一栏目出现多种不同内容时判为冲突，冲突组内所有版本都保留为 CONFLICT，
+ * 不丢弃、不覆盖，等待人工取舍。
+ */
+export function planAnnotationMerge(annotations: MergeableAnnotation[]): AnnotationMergePlan {
+  const bySection = new Map<ShareAnnotationSection, MergeableAnnotation[]>();
+  for (const annotation of annotations) {
+    const group = bySection.get(annotation.section) ?? [];
+    group.push(annotation);
+    bySection.set(annotation.section, group);
+  }
+  const mergedIds: string[] = [];
+  const conflicts: MergeConflictGroup[] = [];
+  for (const [section, group] of bySection) {
+    const distinctContents = [...new Set(group.map((item) => normalizeAnnotationContent(item.content)))];
+    if (distinctContents.length <= 1) {
+      mergedIds.push(...group.map((item) => item.id));
+    } else {
+      conflicts.push({ section, annotationIds: group.map((item) => item.id), contents: distinctContents });
+    }
+  }
+  return { mergedIds, conflicts };
 }
 
 export function calculateSessionDuration(mediaDurationsMs: Array<number | null | undefined>): number {

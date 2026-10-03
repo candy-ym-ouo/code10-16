@@ -114,6 +114,42 @@ Refresh Cookie 路径为 `/api/v1/auth`，生产环境在 HTTPS 下自动使用 
 
 完成复盘请求会原子写入复盘、目标、进度并更新练习状态。任一步失败时全部回滚，返回 `REVIEW_INCOMPLETE` 且 `details` 为缺失项数组。
 
+## 教师复盘交接
+
+练习复盘可生成带时间戳的只读分享链接，交给其他教师或家长查看并收集批注。分享内容是创建时刻的冻结快照，后续编辑复盘不影响已发出的分享。
+
+管理端（需登录）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/sessions/:sessionId/shares` | 创建分享，返回快照时间戳与原始令牌（仅此一次） |
+| GET | `/sessions/:sessionId/shares` | 分享列表，含生效状态、最近访问时间和批注数 |
+| POST | `/shares/:shareId/revoke` | 撤销分享，立即生效 |
+| GET | `/shares/:shareId/annotations` | 批注列表，可按 `status`/`section` 过滤 |
+| POST | `/shares/:shareId/annotations/merge` | 合并批注，冲突版本全部保留 |
+| GET | `/shares/:shareId/audit` | 该分享的审计轨迹 |
+
+公开端（凭令牌访问，无需登录，有更严格的限流）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/shared/:token` | 只读快照、快照时间戳和服务器时间 |
+| POST | `/shared/:token/annotations` | 提交批注，`clientRequestId` 去重保证幂等 |
+
+创建分享：
+
+```json
+{
+  "note": "交接给王老师",
+  "expiresInHours": 72
+}
+```
+
+- 数据库只保存令牌的加盐 SHA-256 摘要；撤销（`revokedAt`）与过期（`expiresAt`）在每次公开请求时实时校验，撤销后立即返回 `410 SHARE_REVOKED`，过期返回 `410 SHARE_EXPIRED`，未知令牌返回 404。
+- 批注栏目为 `GENERAL`、`GOOD_POINTS`、`MAIN_ISSUES`、`NEXT_FOCUS`、`GOALS`。
+- 合并按栏目分组：内容一致（忽略空白差异）的批注标记为 `MERGED`；同栏目出现不同内容时整组标记为 `CONFLICT`，所有冲突版本保留，不删除不覆盖，等待人工取舍。已合并或已冲突的批注不能再次合并（`409 ANNOTATION_ALREADY_MERGED`）。
+- 创建、撤销、批注提交、合并和公开访问被拒都会写入审计日志（含追踪 ID 与 IP 摘要），可通过 `/shares/:shareId/audit` 追溯。
+
 ## 统计与导出
 
 | 方法 | 路径 | 说明 |

@@ -55,6 +55,15 @@ export function hashIp(ip: string): string {
   return createHash("sha256").update(getConfig().REFRESH_TOKEN_PEPPER).update(ip).digest("hex");
 }
 
+export function createShareToken(): { raw: string; hash: string } {
+  const raw = randomBytes(32).toString("base64url");
+  return { raw, hash: hashShareToken(raw) };
+}
+
+export function hashShareToken(raw: string): string {
+  return createHash("sha256").update(getConfig().REFRESH_TOKEN_PEPPER).update(raw).digest("hex");
+}
+
 export function durationToMs(value: string): number {
   const match = /^(\d+)([smhd])$/.exec(value);
   if (!match) throw new Error(`Unsupported duration: ${value}`);

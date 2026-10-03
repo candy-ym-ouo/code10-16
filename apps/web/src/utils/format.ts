@@ -66,3 +66,25 @@ export const goalStatusLabels = {
   MISSED: "已逾期",
   CANCELLED: "已取消",
 } as const;
+
+export const shareSectionLabels = {
+  GENERAL: "整体评价",
+  GOOD_POINTS: "做得好的地方",
+  MAIN_ISSUES: "主要问题",
+  NEXT_FOCUS: "下次练习重点",
+  GOALS: "练习目标",
+} as const;
+
+export const shareAnnotationStatusLabels = {
+  PENDING: "待处理",
+  MERGED: "已合并",
+  CONFLICT: "冲突待取舍",
+} as const;
+
+export const shareAuditActionLabels: Record<string, string> = {
+  SHARE_CREATED: "创建分享",
+  SHARE_REVOKED: "撤销分享",
+  SHARE_ACCESS_DENIED: "访问被拒",
+  SHARE_ANNOTATION_ADDED: "收到批注",
+  SHARE_ANNOTATIONS_MERGED: "合并批注",
+};

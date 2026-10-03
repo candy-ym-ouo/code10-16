@@ -6,6 +6,7 @@ const router = createRouter({
   routes: [
     { path: "/login", name: "login", component: () => import("../views/LoginView.vue"), meta: { guestOnly: true } },
     { path: "/register", name: "register", component: () => import("../views/RegisterView.vue"), meta: { guestOnly: true } },
+    { path: "/shared/:token", name: "shared-review", component: () => import("../views/SharedReviewView.vue") },
     {
       path: "/",
       component: () => import("../components/AppShell.vue"),
@@ -15,6 +16,7 @@ const router = createRouter({
         { path: "sessions", name: "sessions", component: () => import("../views/SessionListView.vue") },
         { path: "sessions/new", name: "session-new", component: () => import("../views/SessionNewView.vue") },
         { path: "sessions/:id/review", name: "session-review", component: () => import("../views/ReviewView.vue"), meta: { immersive: true } },
+        { path: "sessions/:id/handover", name: "session-handover", component: () => import("../views/SessionHandoverView.vue") },
         { path: "sessions/:id", name: "session-detail", component: () => import("../views/SessionDetailView.vue") },
         { path: "goals", name: "goals", component: () => import("../views/GoalsView.vue") },
         { path: "statistics", name: "statistics", component: () => import("../views/StatisticsView.vue") },

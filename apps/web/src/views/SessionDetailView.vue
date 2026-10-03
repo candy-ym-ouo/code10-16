@@ -102,6 +102,7 @@ onMounted(load);
         </div>
         <div class="row wrap">
           <RouterLink v-if="['DRAFT', 'IN_REVIEW'].includes(session.status)" class="button" :to="`/sessions/${session.id}/review`">继续复盘</RouterLink>
+          <RouterLink v-if="session.review" class="button secondary" :to="`/sessions/${session.id}/handover`">复盘交接</RouterLink>
           <button v-if="session.status === 'COMPLETED'" class="button secondary" @click="archive">归档</button>
           <button v-if="session.status === 'ARCHIVED'" class="button secondary" @click="restore">恢复</button>
           <button class="button danger" @click="removeSession">删除</button>

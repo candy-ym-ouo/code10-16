@@ -81,6 +81,20 @@ enum GoalStatus {
   CANCELLED
 }
 
+enum ShareAnnotationSection {
+  GENERAL
+  GOOD_POINTS
+  MAIN_ISSUES
+  NEXT_FOCUS
+  GOALS
+}
+
+enum ShareAnnotationStatus {
+  PENDING
+  MERGED
+  CONFLICT
+}
+
 model User {
   id                String           @id @default(uuid()) @db.Uuid
   email             String           @unique @db.VarChar(254)
@@ -100,6 +114,8 @@ model User {
   goalProgresses    GoalProgress[]
   auditLogs         AuditLog[]
   dataExports       DataExport[]
+  reviewShares      ReviewShare[]
+  shareMergeBatches AnnotationMergeBatch[]
 
   @@map("users")
 }
@@ -145,6 +161,7 @@ model PracticeSession {
   goals            Goal[]
   goalProgresses   GoalProgress[]
   review           SessionReview?
+  reviewShares     ReviewShare[]
 
   @@index([userId, status, startedAt(sort: Desc)])
   @@index([userId, instrument])
@@ -309,5 +326,64 @@ model AuditLog {
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([action, createdAt(sort: Desc)])
+  @@index([resource, resourceId, createdAt(sort: Desc)])
   @@map("audit_logs")
+}
+
+model ReviewShare {
+  id             String                  @id @default(uuid()) @db.Uuid
+  sessionId      String                  @map("session_id") @db.Uuid
+  createdById    String                  @map("created_by_id") @db.Uuid
+  tokenHash      String                  @unique @map("token_hash") @db.Char(64)
+  note           String?                 @db.VarChar(200)
+  snapshot       Json
+  snapshotAt     DateTime                @map("snapshot_at") @db.Timestamptz(6)
+  expiresAt      DateTime?               @map("expires_at") @db.Timestamptz(6)
+  revokedAt      DateTime?               @map("revoked_at") @db.Timestamptz(6)
+  lastAccessedAt DateTime?               @map("last_accessed_at") @db.Timestamptz(6)
+  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  session        PracticeSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdBy      User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  annotations    ShareAnnotation[]
+  mergeBatches   AnnotationMergeBatch[]
+
+  @@index([sessionId, createdAt(sort: Desc)])
+  @@index([createdById, createdAt(sort: Desc)])
+  @@map("review_shares")
+}
+
+model ShareAnnotation {
+  id              String                 @id @default(uuid()) @db.Uuid
+  shareId         String                 @map("share_id") @db.Uuid
+  authorName      String                 @map("author_name") @db.VarChar(80)
+  section         ShareAnnotationSection
+  content         String                 @db.VarChar(2000)
+  status          ShareAnnotationStatus  @default(PENDING)
+  clientRequestId String?                @map("client_request_id") @db.VarChar(80)
+  mergeBatchId    String?                @map("merge_batch_id") @db.Uuid
+  createdAt       DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  share           ReviewShare            @relation(fields: [shareId], references: [id], onDelete: Cascade)
+  mergeBatch      AnnotationMergeBatch?  @relation(fields: [mergeBatchId], references: [id], onDelete: SetNull)
+
+  @@unique([shareId, clientRequestId])
+  @@index([shareId, status])
+  @@index([shareId, section])
+  @@map("share_annotations")
+}
+
+model AnnotationMergeBatch {
+  id            String            @id @default(uuid()) @db.Uuid
+  shareId       String            @map("share_id") @db.Uuid
+  createdById   String            @map("created_by_id") @db.Uuid
+  mergedCount   Int               @map("merged_count")
+  conflictCount Int               @map("conflict_count")
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  share         ReviewShare       @relation(fields: [shareId], references: [id], onDelete: Cascade)
+  createdBy     User              @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  annotations   ShareAnnotation[]
+
+  @@index([shareId, createdAt(sort: Desc)])
+  @@map("annotation_merge_batches")
 }
